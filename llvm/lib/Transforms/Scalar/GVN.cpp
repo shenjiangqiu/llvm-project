@@ -101,6 +101,8 @@ static cl::opt<bool> EnablePRE("enable-pre",
 static cl::opt<bool> EnableLoadPRE("enable-load-pre", cl::init(true));
 static cl::opt<bool> EnableMemDep("enable-gvn-memdep", cl::init(true));
 
+static cl::opt<bool> EnableSvn("svn",cl::init(false));
+static cl::opt<bool> EnableLvn("lvn",cl::init(false));
 // Maximum allowed recursion depth.
 static cl::opt<uint32_t>
 MaxRecurseDepth("gvn-max-recurse-depth", cl::Hidden, cl::init(1000), cl::ZeroOrMore,
@@ -275,7 +277,7 @@ GVN::Expression GVN::ValueTable::createExpr(Instruction *I) {
   e.opcode = I->getOpcode();
   for (Instruction::op_iterator OI = I->op_begin(), OE = I->op_end();
        OI != OE; ++OI)
-    e.varargs.push_back(lookupOrAdd(*OI));
+    e.varargs.push_back(lookupOrAdd(*OI));//
   if (I->isCommutative()) {
     // Ensure that commutative instructions that only differ by a permutation
     // of their operands get the same value number by sorting the operand value
@@ -283,7 +285,7 @@ GVN::Expression GVN::ValueTable::createExpr(Instruction *I) {
     // efficient to sort by hand rather than using, say, std::sort.
     assert(I->getNumOperands() == 2 && "Unsupported commutative instruction!");
     if (e.varargs[0] > e.varargs[1])
-      std::swap(e.varargs[0], e.varargs[1]);
+      std::swap(e.varargs[0], e.varargs[1]);//sort the value number
     e.commutative = true;
   }
 
@@ -2141,7 +2143,7 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   return Changed;
 }
 
-bool GVN::processBlock(BasicBlock *BB) {
+bool GVN::processBlock(BasicBlock *BB) {//this BB is reverse post order
   // FIXME: Kill off InstrsToErase by doing erasing eagerly in a helper function
   // (and incrementing BI before processing an instruction).
   assert(InstrsToErase.empty() &&
@@ -2153,15 +2155,15 @@ bool GVN::processBlock(BasicBlock *BB) {
   ReplaceOperandsWithMap.clear();
   bool ChangedFunction = false;
 
-  for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();
+  for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();//BB every instruction
        BI != BE;) {
-    if (!ReplaceOperandsWithMap.empty())
+    if (!ReplaceOperandsWithMap.empty())//replace map not empty
       ChangedFunction |= replaceOperandsForInBlockEquality(&*BI);
     ChangedFunction |= processInstruction(&*BI);
 
-    if (InstrsToErase.empty()) {
+    if (InstrsToErase.empty()) {//?when set?
       ++BI;
-      continue;
+      continue;//n
     }
 
     // If we need some instructions deleted, do it now.
@@ -2481,7 +2483,7 @@ bool GVN::iterateOnFunction(Function &F) {
   // processBlock.
   ReversePostOrderTraversal<Function *> RPOT(&F);
 
-  for (BasicBlock *BB : RPOT)
+  for (BasicBlock *BB : RPOT)//this will process BB in post reverse order
     Changed |= processBlock(BB);
 
   return Changed;
