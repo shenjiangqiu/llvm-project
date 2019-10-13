@@ -278,6 +278,8 @@ private:
   bool performScalarPREInsertion(Instruction *Instr, BasicBlock *Pred,
                                  BasicBlock *Curr, unsigned int ValNo);
   Value *findLeader(const BasicBlock *BB, uint32_t num);
+  bool valiable_repl_adapter(const BasicBlock *A,const BasicBlock* B);
+  bool is_super_local_dominate(const BasicBlock *A,const BasicBlock* B);
   void cleanupGlobalSets();
   void fillImplicitControlFlowInfo(BasicBlock *BB);
   void verifyRemoved(const Instruction *I) const;

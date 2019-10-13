@@ -80,7 +80,9 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
-
+#include<iostream>
+#include<map>
+#include<set>
 using namespace llvm;
 using namespace llvm::gvn;
 using namespace llvm::VNCoercion;
@@ -97,8 +99,8 @@ STATISTIC(NumGVNEqProp, "Number of equalities propagated");
 STATISTIC(NumPRELoad,   "Number of loads PRE'd");
 
 static cl::opt<bool> EnablePRE("enable-pre",
-                               cl::init(true), cl::Hidden);
-static cl::opt<bool> EnableLoadPRE("enable-load-pre", cl::init(true));
+                               cl::init(false), cl::Hidden);
+static cl::opt<bool> EnableLoadPRE("enable-load-pre", cl::init(false));
 static cl::opt<bool> EnableMemDep("enable-gvn-memdep", cl::init(true));
 
 static cl::opt<bool> EnableSvn("svn",cl::init(false));
@@ -1702,6 +1704,23 @@ void GVN::ValueTable::eraseTranslateCacheEntry(uint32_t Num,
   }
 }
 
+bool GVN::is_super_local_dominate(const llvm::BasicBlock *A, const llvm::BasicBlock *B){
+  if(!DT->dominates(A,B)) return false;
+  while(B!=A){
+    if((B=B->getSinglePredecessor())==nullptr) return false;
+  }
+  return true;
+}
+
+bool GVN::valiable_repl_adapter(const BasicBlock *A,const BasicBlock* B){
+  if(EnableLvn){
+    return A==B;
+  }else if(EnableSvn){
+    return is_super_local_dominate(A,B);
+  }else{
+    return DT->dominates(A, B);
+  }
+}
 // In order to find a leader for a given value number at a
 // specific basic block, we first obtain the list of all Values for that number,
 // and then scan the list to find one whose block dominates the block in
@@ -1712,14 +1731,14 @@ Value *GVN::findLeader(const BasicBlock *BB, uint32_t num) {
   if (!Vals.Val) return nullptr;
 
   Value *Val = nullptr;
-  if (DT->dominates(Vals.BB, BB)) {
+  if (valiable_repl_adapter(Vals.BB, BB)) {
     Val = Vals.Val;
     if (isa<Constant>(Val)) return Val;
   }
 
   LeaderTableEntry* Next = Vals.Next;
   while (Next) {
-    if (DT->dominates(Next->BB, BB)) {
+    if (valiable_repl_adapter(Next->BB, BB)) {
       if (isa<Constant>(Next->Val)) return Next->Val;
       if (!Val) Val = Next->Val;
     }
@@ -2146,6 +2165,7 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
 bool GVN::processBlock(BasicBlock *BB) {//this BB is reverse post order
   // FIXME: Kill off InstrsToErase by doing erasing eagerly in a helper function
   // (and incrementing BI before processing an instruction).
+  
   assert(InstrsToErase.empty() &&
          "We expect InstrsToErase to be empty across iterations");
   if (DeadBlocks.count(BB))
@@ -2648,6 +2668,26 @@ void GVN::assignValNumForDeadCode() {
     }
   }
 }
+std::map<const BasicBlock* ,std::vector<const BasicBlock*>*> EBBS;
+void add_to_ebb_from_current_root(const BasicBlock*root,std::vector<const BasicBlock*>* ebb_vector){
+  //std::cerr<<"add node: "<<root->getName().str()<<" to set"<<std::endl;
+  ebb_vector->push_back(root);
+  for(const auto succ:successors(root)){
+    //std::cerr<<"find succ:name: "<<succ->getName().str()<<std::endl;
+    if(succ->getSinglePredecessor()==nullptr){//new root
+      //std::cerr<<"new root!\n";
+      if(EBBS.find(succ)!=EBBS.end()) return;//we already processed this node
+      std::vector<const BasicBlock*>* ebb=new std::vector<const BasicBlock*>();
+      EBBS.insert(std::make_pair(succ,ebb));
+      add_to_ebb_from_current_root(succ,ebb);
+    }else{
+     // std::cerr<<"find ebb child!:name:"<<succ->getName().str()<<std::endl;
+      add_to_ebb_from_current_root(succ,ebb_vector);
+    }
+  }
+  
+}
+
 
 class llvm::gvn::GVNLegacyPass : public FunctionPass {
 public:
@@ -2661,6 +2701,31 @@ public:
   bool runOnFunction(Function &F) override {
     if (skipFunction(F))
       return false;
+    //print ebbs
+    EBBS.clear();//new function!
+    const auto &BB=F.getEntryBlock();
+    std::vector<const BasicBlock*>* first_ebb=new std::vector<const BasicBlock*>();
+    //std::cout<<"start to process EBB\n";
+    EBBS.insert(std::make_pair(&BB,first_ebb));
+    add_to_ebb_from_current_root(&BB,first_ebb);
+    std::cerr<<F.getName().str()<<":"<<std::endl;
+    for(auto root_ebb_pair:EBBS){
+      std::cerr<<"{";
+      bool start=true;
+      for(auto bb:*(root_ebb_pair.second)){
+        if(start){
+          start=false;
+        }else{
+          std::cerr<<", ";
+        }
+        std::cerr<<bb->getName().str();
+      }
+      std::cerr<<"}";
+      std::cerr<<std::endl;
+      delete root_ebb_pair.second;
+    }
+    std::cerr<<"\n\n";
+    //end print EBBS
 
     auto *LIWP = getAnalysisIfAvailable<LoopInfoWrapperPass>();
 
