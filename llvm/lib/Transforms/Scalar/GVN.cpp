@@ -80,9 +80,7 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
-#include<iostream>
-#include<map>
-#include<set>
+
 using namespace llvm;
 using namespace llvm::gvn;
 using namespace llvm::VNCoercion;
@@ -98,13 +96,13 @@ STATISTIC(NumGVNSimpl,  "Number of instructions simplified");
 STATISTIC(NumGVNEqProp, "Number of equalities propagated");
 STATISTIC(NumPRELoad,   "Number of loads PRE'd");
 
+static cl::opt<bool> EnableLVN("lvn", cl::init(false));
+static cl::opt<bool> EnableSVN("svn", cl::init(false));
 static cl::opt<bool> EnablePRE("enable-pre",
-                               cl::init(false), cl::Hidden);
+                               cl::init(false), cl::Hidden);             //disable pre: change to false
 static cl::opt<bool> EnableLoadPRE("enable-load-pre", cl::init(false));
 static cl::opt<bool> EnableMemDep("enable-gvn-memdep", cl::init(true));
 
-static cl::opt<bool> EnableSvn("svn",cl::init(false));
-static cl::opt<bool> EnableLvn("lvn",cl::init(false));
 // Maximum allowed recursion depth.
 static cl::opt<uint32_t>
 MaxRecurseDepth("gvn-max-recurse-depth", cl::Hidden, cl::init(1000), cl::ZeroOrMore,
@@ -279,7 +277,7 @@ GVN::Expression GVN::ValueTable::createExpr(Instruction *I) {
   e.opcode = I->getOpcode();
   for (Instruction::op_iterator OI = I->op_begin(), OE = I->op_end();
        OI != OE; ++OI)
-    e.varargs.push_back(lookupOrAdd(*OI));//
+    e.varargs.push_back(lookupOrAdd(*OI));
   if (I->isCommutative()) {
     // Ensure that commutative instructions that only differ by a permutation
     // of their operands get the same value number by sorting the operand value
@@ -287,7 +285,7 @@ GVN::Expression GVN::ValueTable::createExpr(Instruction *I) {
     // efficient to sort by hand rather than using, say, std::sort.
     assert(I->getNumOperands() == 2 && "Unsupported commutative instruction!");
     if (e.varargs[0] > e.varargs[1])
-      std::swap(e.varargs[0], e.varargs[1]);//sort the value number
+      std::swap(e.varargs[0], e.varargs[1]);
     e.commutative = true;
   }
 
@@ -1534,8 +1532,11 @@ bool GVN::processLoad(LoadInst *L) {
   MemDepResult Dep = MD->getDependency(L);
 
   // If it is defined in another block, try harder.
-  if (Dep.isNonLocal())
+  if(!EnableLVN){
+    if (Dep.isNonLocal())
     return processNonLocalLoad(L);
+  }
+  
 
   // Only handle the local case below
   if (!Dep.isDef() && !Dep.isClobber()) {
@@ -1704,23 +1705,26 @@ void GVN::ValueTable::eraseTranslateCacheEntry(uint32_t Num,
   }
 }
 
-bool GVN::is_super_local_dominate(const llvm::BasicBlock *A, const llvm::BasicBlock *B){
-  if(!DT->dominates(A,B)) return false;
-  while(B!=A){
-    if((B=B->getSinglePredecessor())==nullptr) return false;
-  }
-  return true;
+bool GVN::is_ancestor(const BasicBlock *A, const BasicBlock *B){
+  if (A==B)
+    return true;
+  if (B->hasNPredecessors(0)||B->hasNPredecessorsOrMore(2))
+    return false;
+  const BasicBlock *C = B->getSinglePredecessor();
+  return is_ancestor(A, C);
 }
 
-bool GVN::valiable_repl_adapter(const BasicBlock *A,const BasicBlock* B){
-  if(EnableLvn){
-    return A==B;
-  }else if(EnableSvn){
-    return is_super_local_dominate(A,B);
-  }else{
-    return DT->dominates(A, B);
-  }
+bool GVN::check(const BasicBlock *A, const BasicBlock *B){
+    if(EnableLVN){
+      return A==B;
+    }else if(EnableSVN){
+      return is_ancestor(A,B);
+    }else{
+      return DT->dominates(A,B);
+    }
 }
+
+
 // In order to find a leader for a given value number at a
 // specific basic block, we first obtain the list of all Values for that number,
 // and then scan the list to find one whose block dominates the block in
@@ -1731,18 +1735,17 @@ Value *GVN::findLeader(const BasicBlock *BB, uint32_t num) {
   if (!Vals.Val) return nullptr;
 
   Value *Val = nullptr;
-  if (valiable_repl_adapter(Vals.BB, BB)) {
+  if (check(Vals.BB, BB)) {
     Val = Vals.Val;
     if (isa<Constant>(Val)) return Val;
   }
 
   LeaderTableEntry* Next = Vals.Next;
   while (Next) {
-    if (valiable_repl_adapter(Next->BB, BB)) {
+    if (check(Next->BB, BB)) {
       if (isa<Constant>(Next->Val)) return Next->Val;
       if (!Val) Val = Next->Val;
     }
-
     Next = Next->Next;
   }
 
@@ -2001,6 +2004,7 @@ bool GVN::processInstruction(Instruction *I) {
 
   // For conditional branches, we can perform simple conditional propagation on
   // the condition value itself.
+  if(!EnableLVN){
   if (BranchInst *BI = dyn_cast<BranchInst>(I)) {
     if (!BI->isConditional())
       return false;
@@ -2028,7 +2032,7 @@ bool GVN::processInstruction(Instruction *I) {
 
     return Changed;
   }
-
+  }
   // For switches, propagate the case values into the case destinations.
   if (SwitchInst *SI = dyn_cast<SwitchInst>(I)) {
     Value *SwitchCond = SI->getCondition();
@@ -2103,7 +2107,7 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
                   OptimizationRemarkEmitter *RunORE) {
   AC = &RunAC;
   DT = &RunDT;
-  VN.setDomTree(DT);
+  VN.setDomTree(DT);   //init value num
   TLI = &RunTLI;
   VN.setAliasAnalysis(&RunAA);
   MD = RunMD;
@@ -2120,7 +2124,8 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   DomTreeUpdater DTU(DT, DomTreeUpdater::UpdateStrategy::Eager);
   // Merge unconditional branches, allowing PRE to catch more
   // optimization opportunities.
-  for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ) {
+  if(!EnableLVN){
+    for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ) {
     BasicBlock *BB = &*FI++;
 
     bool removedBlock = MergeBlockIntoPredecessor(BB, &DTU, LI, nullptr, MD);
@@ -2129,6 +2134,8 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
 
     Changed |= removedBlock;
   }
+  }
+ 
 
   unsigned Iteration = 0;
   while (ShouldContinue) {
@@ -2162,10 +2169,11 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   return Changed;
 }
 
-bool GVN::processBlock(BasicBlock *BB) {//this BB is reverse post order
+
+
+bool GVN::processBlock(BasicBlock *BB) {
   // FIXME: Kill off InstrsToErase by doing erasing eagerly in a helper function
   // (and incrementing BI before processing an instruction).
-  
   assert(InstrsToErase.empty() &&
          "We expect InstrsToErase to be empty across iterations");
   if (DeadBlocks.count(BB))
@@ -2175,15 +2183,15 @@ bool GVN::processBlock(BasicBlock *BB) {//this BB is reverse post order
   ReplaceOperandsWithMap.clear();
   bool ChangedFunction = false;
 
-  for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();//BB every instruction
+  for (BasicBlock::iterator BI = BB->begin(), BE = BB->end();
        BI != BE;) {
-    if (!ReplaceOperandsWithMap.empty())//replace map not empty
+    if (!ReplaceOperandsWithMap.empty())
       ChangedFunction |= replaceOperandsForInBlockEquality(&*BI);
     ChangedFunction |= processInstruction(&*BI);
 
-    if (InstrsToErase.empty()) {//?when set?
+    if (InstrsToErase.empty()) {
       ++BI;
-      continue;//n
+      continue;
     }
 
     // If we need some instructions deleted, do it now.
@@ -2503,7 +2511,7 @@ bool GVN::iterateOnFunction(Function &F) {
   // processBlock.
   ReversePostOrderTraversal<Function *> RPOT(&F);
 
-  for (BasicBlock *BB : RPOT)//this will process BB in post reverse order
+  for (BasicBlock *BB : RPOT)
     Changed |= processBlock(BB);
 
   return Changed;
@@ -2668,24 +2676,24 @@ void GVN::assignValNumForDeadCode() {
     }
   }
 }
-std::map<const BasicBlock* ,std::vector<const BasicBlock*>*> EBBS;
-void add_to_ebb_from_current_root(const BasicBlock*root,std::vector<const BasicBlock*>* ebb_vector){
-  //std::cerr<<"add node: "<<root->getName().str()<<" to set"<<std::endl;
-  ebb_vector->push_back(root);
-  for(const auto succ:successors(root)){
-    //std::cerr<<"find succ:name: "<<succ->getName().str()<<std::endl;
-    if(succ->getSinglePredecessor()==nullptr){//new root
-      //std::cerr<<"new root!\n";
-      if(EBBS.find(succ)!=EBBS.end()) return;//we already processed this node
-      std::vector<const BasicBlock*>* ebb=new std::vector<const BasicBlock*>();
-      EBBS.insert(std::make_pair(succ,ebb));
-      add_to_ebb_from_current_root(succ,ebb);
-    }else{
-     // std::cerr<<"find ebb child!:name:"<<succ->getName().str()<<std::endl;
-      add_to_ebb_from_current_root(succ,ebb_vector);
+
+std::map<const BasicBlock *, std::vector<const BasicBlock *> *> EBB;
+
+void get_ebb(const BasicBlock *entry, std::vector<const BasicBlock *> *BBs) {
+  BBs->push_back(entry);
+  for (const auto suc_bb : successors(entry)) {
+    if (suc_bb->hasNPredecessorsOrMore(2)) {
+      if (EBB.find(suc_bb) == EBB.end()) {
+        std::vector<const BasicBlock *> *newBBs =
+            new std::vector<const BasicBlock *>();
+        EBB.insert(std::make_pair(suc_bb, newBBs));
+        get_ebb(suc_bb, newBBs);
+      }
+    } else {
+      get_ebb(suc_bb, BBs);
     }
   }
-  
+  return;
 }
 
 
@@ -2699,45 +2707,57 @@ public:
   }
 
   bool runOnFunction(Function &F) override {
-    if (skipFunction(F))
-      return false;
-    //print ebbs
-    EBBS.clear();//new function!
-    const auto &BB=F.getEntryBlock();
-    std::vector<const BasicBlock*>* first_ebb=new std::vector<const BasicBlock*>();
-    //std::cout<<"start to process EBB\n";
-    EBBS.insert(std::make_pair(&BB,first_ebb));
-    add_to_ebb_from_current_root(&BB,first_ebb);
-    std::cerr<<F.getName().str()<<":"<<std::endl;
-    for(auto root_ebb_pair:EBBS){
-      std::cerr<<"{";
-      bool start=true;
-      for(auto bb:*(root_ebb_pair.second)){
-        if(start){
-          start=false;
-        }else{
-          std::cerr<<", ";
+    
+    /*print ebb*/
+    errs()<<F.getEntryBlock().getName()<<"\n";
+    if (EnableSVN) {
+      // errs() << F.getName() <<':\n';
+      // errs().write_escaped(F.getName()) << ":\n";
+      // const auto &bbs = F.getBasicBlockList();
+      EBB.clear();
+      const auto &bb = F.getEntryBlock();
+      std::vector<const BasicBlock *> *entryBBs =
+          new std::vector<const BasicBlock *>();
+      EBB.insert(std::make_pair(&bb, entryBBs));
+      get_ebb(&bb, entryBBs);
+
+      errs() << F.getName() << ":\n";
+      for (auto ebb : EBB) {
+        errs() << "{";
+        bool flag = true;
+        for (const auto bb : *(ebb.second)) {
+          if (flag) {
+            flag = false;
+          } else {
+            errs() << ", ";
+          }
+          errs() << bb->getName();
         }
-        std::cerr<<bb->getName().str();
+        errs() << "}";
+        errs() << '\n';
+        delete ebb.second;
       }
-      std::cerr<<"}";
-      std::cerr<<std::endl;
-      delete root_ebb_pair.second;
+
+      errs() << '\n';
     }
-    std::cerr<<"\n\n";
-    //end print EBBS
+
+    /*if (skipFunction(F))
+      return false;*/
 
     auto *LIWP = getAnalysisIfAvailable<LoopInfoWrapperPass>();
 
     return Impl.runImpl(
         F, getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F),
         getAnalysis<DominatorTreeWrapperPass>().getDomTree(),
-        getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(),
+        getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F),
         getAnalysis<AAResultsWrapperPass>().getAAResults(),
-        NoMemDepAnalysis ? nullptr
-                : &getAnalysis<MemoryDependenceWrapperPass>().getMemDep(),
+        NoMemDepAnalysis
+            ? nullptr
+            : &getAnalysis<MemoryDependenceWrapperPass>().getMemDep(),
         LIWP ? &LIWP->getLoopInfo() : nullptr,
         &getAnalysis<OptimizationRemarkEmitterWrapperPass>().getORE());
+
+
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
