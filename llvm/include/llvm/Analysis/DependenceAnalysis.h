@@ -964,7 +964,7 @@ template <typename T> class ArrayRef;
     void getAnalysisUsage(AnalysisUsage &) const override;
     void print(raw_ostream &, const Module * = nullptr) const override;
     DependenceInfo &getDI() const;
-
+    void processAllLoops( Loop* ,ScalarEvolution& SE) const;
   private:
     std::unique_ptr<DependenceInfo> info;
   }; // class DependenceAnalysisWrapperPass
