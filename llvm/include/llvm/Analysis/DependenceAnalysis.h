@@ -960,6 +960,7 @@ template <typename T> class ArrayRef;
     void releaseMemory() override;
     void getAnalysisUsage(AnalysisUsage &) const override;
     void print(raw_ostream &, const Module * = nullptr) const override;
+    void processAllLoops( Loop* ,ScalarEvolution& SE) const;
     DependenceInfo &getDI() const;
 
   private:
