@@ -138,11 +138,38 @@ FunctionPass *llvm::createDependenceAnalysisWrapperPass() {
   return new DependenceAnalysisWrapperPass();
 }
 
+int LoopNestNumber = 0;
+static bool isLoadOrStore(const Instruction *I);
+
 bool DependenceAnalysisWrapperPass::runOnFunction(Function &F) {
   auto &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
   auto &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
   auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   info.reset(new DependenceInfo(&F, &AA, &SE, &LI));
+
+  auto &BBList = F.getBasicBlockList();
+  for (auto &bb : BBList) {
+    int NestFlag = 0;
+    if (LI.getLoopDepth(&bb) && LI[&bb]->getSubLoops().size()==0) {
+      auto &InstList = bb.getInstList();
+      for (auto &inst : InstList) {
+        if (isLoadOrStore(&inst)) {
+          auto SCEV = SE.getSCEV(getLoadStorePointerOperand(&inst));
+          if (SCEV->getSCEVType() == scAddRecExpr) {
+            auto stride = *dyn_cast<SCEVConstant>(dyn_cast<SCEVAddRecExpr>(SCEV)->getStepRecurrence(SE))->getValue()->getValue().getRawData();
+            if (stride < 64) {
+              if (NestFlag == 0) {
+                errs() << "Loop Nest " << ++LoopNestNumber << "\n";
+                NestFlag = 1;
+              }
+              errs() << inst << "\nlevel: " << LI.getLoopDepth(&bb) << "\nstride: " << stride/4 << "\n\n";
+            }
+          }
+        }
+      }
+    }
+  }
+
   return false;
 }
 

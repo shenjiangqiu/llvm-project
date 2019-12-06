@@ -276,6 +276,7 @@ private:
   bool performScalarPREInsertion(Instruction *Instr, BasicBlock *Pred,
                                  BasicBlock *Curr, unsigned int ValNo);
   Value *findLeader(const BasicBlock *BB, uint32_t num);
+  bool SVN_ancestor(const BasicBlock *B1, const BasicBlock *B2);//deng
   void cleanupGlobalSets();
   void fillImplicitControlFlowInfo(BasicBlock *BB);
   void verifyRemoved(const Instruction *I) const;

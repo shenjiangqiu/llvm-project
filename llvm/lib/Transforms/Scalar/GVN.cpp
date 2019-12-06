@@ -96,9 +96,11 @@ STATISTIC(NumGVNEqProp, "Number of equalities propagated");
 STATISTIC(NumPRELoad,   "Number of loads PRE'd");
 
 static cl::opt<bool> EnablePRE("enable-pre",
-                               cl::init(true), cl::Hidden);
+                               cl::init(false), cl::Hidden);
 static cl::opt<bool> EnableLoadPRE("enable-load-pre", cl::init(true));
 static cl::opt<bool> EnableMemDep("enable-gvn-memdep", cl::init(true));
+static cl::opt<bool> EnableLVN("lvn", cl::init(false));
+static cl::opt<bool> EnableSVN("svn", cl::init(false));
 
 // Maximum allowed recursion depth.
 static cl::opt<uint32_t>
@@ -1468,9 +1470,10 @@ bool GVN::processLoad(LoadInst *L) {
   MemDepResult Dep = MD->getDependency(L);
 
   // If it is defined in another block, try harder.
-  if (Dep.isNonLocal())
-    return processNonLocalLoad(L);
-
+  if(!EnableLVN){
+    if (Dep.isNonLocal())
+      return processNonLocalLoad(L);
+  }
   // Only handle the local case below
   if (!Dep.isDef() && !Dep.isClobber()) {
     // This might be a NonFuncLocal or an Unknown
@@ -1610,23 +1613,43 @@ Value *GVN::findLeader(const BasicBlock *BB, uint32_t num) {
   if (!Vals.Val) return nullptr;
 
   Value *Val = nullptr;
-  if (DT->dominates(Vals.BB, BB)) {
+
+  if (DT->dominates(Vals.BB, BB) && ((EnableLVN && Vals.BB == BB) ||
+                                     (EnableSVN && SVN_ancestor(Vals.BB, BB)) ||
+                                     (!EnableLVN && !EnableSVN))) {
     Val = Vals.Val;
-    if (isa<Constant>(Val)) return Val;
+    if (isa<Constant>(Val))  return Val;
   }
 
-  LeaderTableEntry* Next = Vals.Next;
+  LeaderTableEntry *Next = Vals.Next;
   while (Next) {
-    if (DT->dominates(Next->BB, BB)) {
-      if (isa<Constant>(Next->Val)) return Next->Val;
-      if (!Val) Val = Next->Val;
+    if (DT->dominates(Next->BB, BB) && ((EnableLVN && Next->BB == BB) ||
+                                        (EnableSVN && SVN_ancestor(Next->BB, BB)) ||
+                                        (!EnableLVN && !EnableSVN))) {
+      if (isa<Constant>(Next->Val))  return Next->Val;
+      if (!Val)  Val = Next->Val;
     }
 
     Next = Next->Next;
   }
-
   return Val;
 }
+
+/*return ture if B1 is an ancestor of B2 in an EBB; otherwise, return false*/
+bool GVN::SVN_ancestor(const BasicBlock *B1, const BasicBlock *B2) {
+  if (B1 == B2)
+    return true;
+
+  uint32_t B2_pred_num = 0; 
+  for(const auto pred:predecessors(B2))
+      B2_pred_num++;
+  if (B2_pred_num != 1)
+    return false;
+
+  const BasicBlock *B2_pred = B2->getSinglePredecessor();
+  return SVN_ancestor(B1, B2_pred);
+}
+
 
 /// There is an edge from 'Src' to 'Dst'.  Return
 /// true if every path from the entry block to 'Dst' passes via this edge.  In
@@ -1884,6 +1907,7 @@ bool GVN::processInstruction(Instruction *I) {
 
   // For conditional branches, we can perform simple conditional propagation on
   // the condition value itself.
+  if(!EnableLVN){
   if (BranchInst *BI = dyn_cast<BranchInst>(I)) {
     if (!BI->isConditional())
       return false;
@@ -1911,7 +1935,7 @@ bool GVN::processInstruction(Instruction *I) {
 
     return Changed;
   }
-
+  }
   // For switches, propagate the case values into the case destinations.
   if (SwitchInst *SI = dyn_cast<SwitchInst>(I)) {
     Value *SwitchCond = SI->getCondition();
@@ -1999,17 +2023,19 @@ bool GVN::runImpl(Function &F, AssumptionCache &RunAC, DominatorTree &RunDT,
   bool Changed = false;
   bool ShouldContinue = true;
 
-  DomTreeUpdater DTU(DT, DomTreeUpdater::UpdateStrategy::Eager);
-  // Merge unconditional branches, allowing PRE to catch more
-  // optimization opportunities.
-  for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ) {
-    BasicBlock *BB = &*FI++;
+  if(!EnableLVN){
+    DomTreeUpdater DTU(DT, DomTreeUpdater::UpdateStrategy::Eager);
+    // Merge unconditional branches, allowing PRE to catch more
+    // optimization opportunities.
+    for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ) {
+      BasicBlock *BB = &*FI++;
 
-    bool removedBlock = MergeBlockIntoPredecessor(BB, &DTU, LI, nullptr, MD);
-    if (removedBlock)
-      ++NumGVNBlocks;
+      bool removedBlock = MergeBlockIntoPredecessor(BB, &DTU, LI, nullptr, MD);
+      if (removedBlock)
+        ++NumGVNBlocks;
 
-    Changed |= removedBlock;
+      Changed |= removedBlock;
+    }
   }
 
   unsigned Iteration = 0;
@@ -2538,6 +2564,26 @@ void GVN::assignValNumForDeadCode() {
   }
 }
 
+std::map<const BasicBlock* ,std::vector<const BasicBlock*>*> EBB_map;
+void add_recursively(const BasicBlock *entry, std::vector<const BasicBlock *> *EBBlist) {
+  EBBlist->push_back(entry);
+  for (const auto succ : successors(entry)) {
+    uint32_t pred_num = 0;
+    for (const auto pred : predecessors(succ))
+      pred_num++;
+    if (pred_num == 1) {
+      add_recursively(succ, EBBlist);
+    } else if (EBB_map.find(succ) == EBB_map.end()) {
+      std::vector<const BasicBlock *> *ebb =
+          new std::vector<const BasicBlock *>();
+      EBB_map.insert(std::pair<const BasicBlock* ,std::vector<const BasicBlock*>*>(succ, ebb));
+      add_recursively(succ, ebb);
+    } else {
+      break;
+    }
+  }
+}
+
 class llvm::gvn::GVNLegacyPass : public FunctionPass {
 public:
   static char ID; // Pass identification, replacement for typeid
@@ -2548,8 +2594,26 @@ public:
   }
 
   bool runOnFunction(Function &F) override {
-    if (skipFunction(F))
-      return false;
+    if (EnableSVN) {
+      const auto &entry = F.getEntryBlock();
+      std::vector<const BasicBlock *> *entry_ebb =
+          new std::vector<const BasicBlock *>();
+      EBB_map.clear();
+      EBB_map.insert(std::pair<const BasicBlock* ,std::vector<const BasicBlock*>*>(&entry, entry_ebb));
+      add_recursively(&entry, entry_ebb);
+
+      errs() <<'\n' << F.getName() << ":" << '\n';
+      for (const auto ebbs : EBB_map) {
+        errs() << "{" ;
+        for (const auto bb:*(ebbs.second))
+          if (bb == *ebbs.second->begin())
+            errs() << bb->getName();
+          else
+            errs() << ", " << bb->getName();
+            
+        errs() << "}" << '\n';
+      }
+    }
 
     auto *LIWP = getAnalysisIfAvailable<LoopInfoWrapperPass>();
 
