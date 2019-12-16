@@ -46,6 +46,21 @@
 #include "llvm/Pass.h"
 
 namespace llvm {
+  class RefGroup {
+  public:
+    RefGroup(Instruction* inst):instructions(),leader(inst){
+      instructions.push_back(inst);
+    }
+    
+    RefGroup(){}
+    void AddToGroup(Instruction* inst,bool);
+    bool IsBelongToGroup(Instruction* inst);
+    const std::vector<Instruction*>& GetInstructions(){ return instructions;} 
+    Instruction* GetLeader(){return leader;} 
+  private:
+    std::vector<Instruction *> instructions;
+    Instruction *leader;
+  };
 template <typename T> class ArrayRef;
   class Loop;
   class LoopInfo;
@@ -271,6 +286,10 @@ template <typename T> class ArrayRef;
   ///
   class DependenceInfo {
   public:
+    void processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& AA);
+    bool IsInSameGroup(Instruction *inst,RefGroup *group,AAResults& AA,int level);
+    bool isSpatialReuse(Instruction* Src,Instruction* Dst);
+    std::vector<std::vector<RefGroup>> build_Groups(BasicBlock* block,AAResults& AA);
     DependenceInfo(Function *F, AliasAnalysis *AA, ScalarEvolution *SE,
                    LoopInfo *LI)
         : AA(AA), SE(SE), LI(LI), F(F) {}
@@ -946,10 +965,14 @@ template <typename T> class ArrayRef;
   private:
     raw_ostream &OS;
   }; // class DependenceAnalysisPrinterPass
+  
 
   /// Legacy pass manager pass to access dependence information
   class DependenceAnalysisWrapperPass : public FunctionPass {
   public:
+    bool isSpatialReuse(Instruction* Src,Instruction* Dst,AAResults * AA);
+    std::vector<RefGroup> build_Groups(BasicBlock* block,AAResults & AA) const;
+    bool IsInSameGroup(Instruction* inst,RefGroup* group,AAResults & AA) const;
     static char ID; // Class identification, replacement for typeinfo
     DependenceAnalysisWrapperPass() : FunctionPass(ID) {
       initializeDependenceAnalysisWrapperPassPass(
@@ -960,7 +983,7 @@ template <typename T> class ArrayRef;
     void releaseMemory() override;
     void getAnalysisUsage(AnalysisUsage &) const override;
     void print(raw_ostream &, const Module * = nullptr) const override;
-    void processAllLoops( Loop* ,ScalarEvolution& SE) const;
+    void processAllLoops( Loop* ,ScalarEvolution& SE,AAResults& AA) const;
     DependenceInfo &getDI() const;
 
   private:

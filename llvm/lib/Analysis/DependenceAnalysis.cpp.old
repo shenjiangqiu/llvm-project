@@ -66,7 +66,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Analysis/VectorUtils.h"
+
 using namespace llvm;
 
 #define DEBUG_TYPE "da"
@@ -114,10 +114,6 @@ static cl::opt<bool>
 //===----------------------------------------------------------------------===//
 // basics
 
-static AliasResult underlyingObjectsAlias(AliasAnalysis *AA,
-                                          const DataLayout &DL,
-                                          const MemoryLocation &LocA,
-                                          const MemoryLocation &LocB);
 DependenceAnalysis::Result
 DependenceAnalysis::run(Function &F, FunctionAnalysisManager &FAM) {
   auto &AA = FAM.getResult<AAManager>(F);
@@ -156,198 +152,78 @@ void llvm::RefGroup::AddToGroup(llvm::Instruction *inst,bool IsLeader){
     leader=inst;
   }
 }
-bool DependenceInfo::isSpatialReuse(Instruction* Src,Instruction* Dst){
-  if (Src == Dst)
-    return false;
 
-  if ((!Src->mayReadFromMemory() && !Src->mayWriteToMemory()) ||
-      (!Dst->mayReadFromMemory() && !Dst->mayWriteToMemory()))
-    // if both instructions don't reference memory, there's no dependence
-    return false;
-
-  if (!isLoadOrStore(Src) || !isLoadOrStore(Dst)) {
-    // can only analyze simple loads and stores, i.e., no calls, invokes, etc.
-    return false;
+bool DependenceAnalysisWrapperPass::IsInSameGroup(Instruction *inst,
+                                                  RefGroup *group,AAResults& AA) const {
+  auto d = info->depends(inst, group->GetLeader(), true);
+  auto a=AA.alias(inst,group->GetLeader());
+  /* if (d) {
+    errs() << *inst << " depends: \n" << *(group->GetLeader()) << " :\n";
+    d->dump(errs());
+    errs() << "\n\n";
   }
-
-  assert(isLoadOrStore(Src) && "instruction is not load or store");
-  assert(isLoadOrStore(Dst) && "instruction is not load or store");
-  Value *SrcPtr = getLoadStorePointerOperand(Src);
-  Value *DstPtr = getLoadStorePointerOperand(Dst);
-
-  switch (underlyingObjectsAlias(AA, F->getParent()->getDataLayout(),
-                                 MemoryLocation::get(Dst),
-                                 MemoryLocation::get(Src))) {
-  case MayAlias:
-  case PartialAlias:
-    // cannot analyse objects if we don't understand their aliasing.
-    LLVM_DEBUG(dbgs() << "can't analyze may or partial alias\n");
+  d = info->depends(group->GetLeader(), inst, true);
+  if (d) {
+    errs() << *(group->GetLeader()) << " depends: \n" << *inst << " :\n";
+    d->dump(errs());
+    errs() << "\n\n";
+  } */
+  if(!a){
+    errs()<<"not alias\n";
     return false;
-  case NoAlias:
-    // If the objects noalias, they are distinct, accesses are independent.
-    LLVM_DEBUG(dbgs() << "no alias\n");
-    return false;
-  case MustAlias:
-    break; // The underlying objects alias; test accesses for dependence.
+
   }
+  
 
-  // establish loop nesting levels
-  establishNestingLevels(Src, Dst);
-  LLVM_DEBUG(dbgs() << "    common nesting levels = " << CommonLevels << "\n");
-  LLVM_DEBUG(dbgs() << "    maximum nesting levels = " << MaxLevels << "\n");
 
-  //FullDependence Result(Src, Dst, PossiblyLoopIndependent, CommonLevels);
- 
-  //unsigned Pairs = 1;
-  //SmallVector<Subscript, 2> Pair(Pairs);
-
-  //WZL try to use GEP to find subscript
-
-  bool UsefulGEP = false;
-  GEPOperator *SrcGEP = dyn_cast<GEPOperator>(SrcPtr);
-  GEPOperator *DstGEP = dyn_cast<GEPOperator>(DstPtr);
-  if (SrcGEP && DstGEP &&
-      SrcGEP->getPointerOperandType() == DstGEP->getPointerOperandType()) {
-    const SCEV *SrcPtrSCEV = SE->getSCEV(SrcGEP->getPointerOperand());
-    const SCEV *DstPtrSCEV = SE->getSCEV(DstGEP->getPointerOperand());
-    LLVM_DEBUG(dbgs() << "    SrcPtrSCEV = " << *SrcPtrSCEV << "\n");
-    LLVM_DEBUG(dbgs() << "    DstPtrSCEV = " << *DstPtrSCEV << "\n");
-
-    UsefulGEP = isLoopInvariant(SrcPtrSCEV, LI->getLoopFor(Src->getParent())) &&
-                isLoopInvariant(DstPtrSCEV, LI->getLoopFor(Dst->getParent())) &&
-                (SrcGEP->getNumOperands() == DstGEP->getNumOperands()) &&
-                isKnownPredicate(CmpInst::ICMP_EQ, SrcPtrSCEV, DstPtrSCEV);
-  }
-
-  unsigned Pairs = UsefulGEP ? SrcGEP->idx_end() - SrcGEP->idx_begin() : 1;
-  SmallVector<Subscript, 4> Pair(Pairs);
-
-  if (UsefulGEP) { //since we have the infomation of pairs we can test if it's spatial reuse.
-    LLVM_DEBUG(dbgs() << "    using GEPs\n");
-    unsigned P = 0;
-    for (GEPOperator::const_op_iterator SrcIdx = SrcGEP->idx_begin(),
-           SrcEnd = SrcGEP->idx_end(),
-           DstIdx = DstGEP->idx_begin();
-         SrcIdx != SrcEnd;
-         ++SrcIdx, ++DstIdx, ++P) {
-      Pair[P].Src = SE->getSCEV(*SrcIdx);
-      Pair[P].Dst = SE->getSCEV(*DstIdx);
-      if(SrcIdx<SrcEnd-1){
-        if(Pair[P].Src!=Pair[P].Dst){
-          return false;
-        }
+  if(d){
+    d->dump(errs());
+    auto level=d->getLevels();
+    errs()<<"inst1: "<<(inst->getFunction()->getName())<<", "<<*inst<<"\n";
+    errs()<<"inst2: "<<(group->GetLeader()->getFunction()->getName())<<", "<<*(group->GetLeader())<<"\n";
+    
+    for(auto i=1u;i<=level;i++){
+      auto distance=d->getDistance(i);
+      if(distance){
+        errs()<<*distance<<" ";
       }
-      unifySubscriptType(&Pair[P]);
+      
     }
-    return true;//that's spatial reuse!!
+    errs()<<"\n";
   }
+
   return false;
 }
-
-bool DependenceInfo::IsInSameGroup(Instruction *inst, RefGroup *group,
-                                   AAResults &AA, int level) {
-
-  // errs()<<*inst<<"\n"<<*(group->GetLeader())<<"\n"<<inst->getFunction()->getName()<<"\n";
-  for (auto group_inst : group->GetInstructions()) {
-
-    if (isSpatialReuse(inst, group_inst)) {
-      return true;
-    }
-
-    auto d = depends(inst, group_inst, true);
-
-    if (d) { // temporal reuse
-
-      auto t_level = d->getLevels();
-      // errs()<<"inst1: "<<(inst->getFunction()->getName())<<", "<<*inst<<"\n";
-      // errs()<<"inst2: "<<(group->GetLeader()->getFunction()->getName())<<",
-      // "<<*(group->GetLeader())<<"\n";
-      bool temporalReuse = true;
-      for (auto i = 1u; i <= t_level; i++) {
-        auto distance = d->getDistance(i);
-        if (distance) {
-          // errs()<<*distance<<" ";
-          if (i != level) {
-            if (!distance->isZero()) { // not level, must zero!!
-              temporalReuse = false;
-            }
-          }
+std::vector<RefGroup> DependenceAnalysisWrapperPass::build_Groups(BasicBlock* block,AAResults& AA) const{
+  std::vector<RefGroup> groups;
+  for(auto&& inst:*block){
+    if(groups.empty()){
+      groups.push_back(RefGroup(&inst));
+    }else{
+      bool added=false;
+      for(auto&&group:groups){
+        if(IsInSameGroup(&inst,&group,AA)){
+          added=true;
+          group.AddToGroup(&inst,false);//TODO, need to find is leader
+          assert(0);//TODO can't reach here now
+          break;
         }
       }
-      if (temporalReuse) {
-        return true;
-      } 
-      //not find temporal in this loop, find other instructions in this group for temporal reuse;
-      // errs()<<"\n";
-    } 
-  }
-  return false;
-}
-std::vector<std::vector<RefGroup>> DependenceInfo::build_Groups(BasicBlock* block,AAResults& AA){
-
-  //for each loop:
-  static int loopNest=0;
-  auto loopDeps = LI->getLoopDepth(block);
-  std::vector<std::vector<RefGroup>> groups;
-  for (int i = 1; i <= loopDeps; i++) {
-    std::vector<RefGroup> level_groups;
-    for (auto &&inst : *block) {
-      if(!isLoadOrStore(&inst)){
-        continue;
-      }
-      if (level_groups.empty()) {
-        level_groups.push_back(RefGroup(&inst));
-      } else {
-        bool added = false;
-        for (auto &&group : level_groups) {
-          if (IsInSameGroup(&inst, &group, AA,i)) {
-            added = true;
-            group.AddToGroup(&inst, false); // TODO, need to find is leader
-            //assert(0);                      // TODO can't reach here now
-            break;
-          }
-        }
-        if (added == false) {
-          level_groups.push_back(RefGroup(&inst));
-        }
+      if(added==false){
+        groups.push_back(RefGroup(&inst));
       }
     }
-
-    groups.push_back(level_groups);
   }
   return groups;
 }
-
-
-void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& AA)  {
+void DependenceAnalysisWrapperPass::processAllLoops(Loop *loop,
+                                                    ScalarEvolution &SE,AAResults& AA) const {
   auto child_loops = loop->getSubLoops();
 
 
   if (child_loops.size() == 0) { // the inner most loop
-
     for( auto blocks:loop->getBlocks()){
-      errs()<<blocks->getParent()->getName()<<"\n";
       auto groups=build_Groups(blocks,AA);
-      int i=1;
-      for(auto&& sub1:groups){
-        errs()<<"loop level :"<<i++<<"\n";
-        int j=1;
-        for(auto&& sub2:sub1){
-          errs()<<"refGroup: "<<j++<<"\n";
-          auto &&insts=sub2.GetInstructions();
-          for(auto &&inst:insts){
-            errs()<<*inst<<"\n";
-          }  
-          errs()<<"\n";
-          auto Leader=dyn_cast<SCEVAddRecExpr>( SE.getSCEV(getLoadStorePointerOperand(sub2.GetLeader())));
-          Leader->dump();
-
-        }
-        
-        errs()<<"Loop cost: ";
-        
-        errs()<<"----------\n";
-      }
     }
     // inner most loop
     /*
@@ -398,7 +274,7 @@ bool DependenceAnalysisWrapperPass::runOnFunction(Function &F) {
   info.reset(new DependenceInfo(&F, &AA, &SE, &LI));
 
   for (auto &loop : LI) {
-    info->processAllLoops(loop, SE,AA);
+    processAllLoops(loop, SE,AA);
   }
 
   /*  for(auto &b:F){
@@ -3744,14 +3620,12 @@ DependenceInfo::depends(Instruction *Src, Instruction *Dst,
     //WZL: Delinearize to find subscript pairs
     const SCEV *SrcSCEV = SE->getSCEV(SrcPtr);
     const SCEV *DstSCEV = SE->getSCEV(DstPtr);
-    
     LLVM_DEBUG(dbgs() << "    SrcSCEV = " << *SrcSCEV << "\n");
     LLVM_DEBUG(dbgs() << "    DstSCEV = " << *DstSCEV << "\n");
     Pair[0].Src = SrcSCEV;
     Pair[0].Dst = DstSCEV;
     // end 
   }
-  
   
   if (Delinearize) {
     if (tryDelinearize(Src, Dst, Pair)) {      
@@ -3767,7 +3641,7 @@ DependenceInfo::depends(Instruction *Src, Instruction *Dst,
     removeMatchingExtensions(&Pair[P]);
     Pair[P].Classification =
       classifyPair(Pair[P].Src, LI->getLoopFor(Src->getParent()),
-                       Pair[P].Dst, LI->getLoopFor(Dst->getParent()),
+                   Pair[P].Dst, LI->getLoopFor(Dst->getParent()),
                    Pair[P].Loops);
     Pair[P].GroupLoops = Pair[P].Loops;
     Pair[P].Group.set(P);
@@ -3777,7 +3651,6 @@ DependenceInfo::depends(Instruction *Src, Instruction *Dst,
     LLVM_DEBUG(dbgs() << "\tclass = " << Pair[P].Classification << "\n");
     LLVM_DEBUG(dbgs() << "\tloops = ");
     LLVM_DEBUG(dumpSmallBitVector(Pair[P].Loops));
-    //errs()<<P<<" :"<<(Pair[P].Src==Pair[P].Dst)<<"\n";
   }
   
   

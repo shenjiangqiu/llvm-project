@@ -1,0 +1,61 @@
+Index: Passes.h
+--- Passes.h
++++ Passes.h
+@@ -74,13 +74,6 @@
+ 
+   //===--------------------------------------------------------------------===//
+   //
+-  // createLoopCostAnalysisPass - This pass assigns a numerical cost to each
+-  // loop in the loop nest considering cache and register data.
+-  //
+-  FunctionPass *createLoopCostAnalysisPass();
+-
+-  //===--------------------------------------------------------------------===//
+-  //
+   // createRegionInfoPass - This pass finds all single entry single exit regions
+   // in a function and builds the region hierarchy.
+   //
+Index: InitializePasses.h
+--- InitializePasses.h
++++ InitializePasses.h
+@@ -122,7 +122,6 @@
+ void initializeEarlyIfConverterPass(PassRegistry&);
+ void initializeEdgeBundlesPass(PassRegistry&);
+ void initializeExpandPostRAPass(PassRegistry&);
+-void initializeLoopCostAnalysisPass(PassRegistry&);
+ void initializeAAResultsWrapperPassPass(PassRegistry &);
+ void initializeGCOVProfilerLegacyPassPass(PassRegistry&);
+ void initializePGOInstrumentationGenLegacyPassPass(PassRegistry&);
+Index: LinkAllPasses.h
+--- LinkAllPasses.h
++++ LinkAllPasses.h
+@@ -109,7 +109,6 @@
+       (void) llvm::createLCSSAPass();
+       (void) llvm::createLICMPass();
+       (void) llvm::createLazyValueInfoPass();
+-      (void) llvm::createLoopCostAnalysisPass();
+       (void) llvm::createLoopExtractorPass();
+       (void) llvm::createLoopInterchangePass();
+       (void) llvm::createLoopSimplifyPass();
+Index: Analysis.cpp
+--- Analysis.cpp
++++ Analysis.cpp
+@@ -45,7 +45,6 @@
+   initializeDomOnlyViewerPass(Registry);
+   initializePostDomViewerPass(Registry);
+   initializeDomOnlyPrinterPass(Registry);
+-  initializeLoopCostAnalysisPass(Registry);
+   initializePostDomPrinterPass(Registry);
+   initializePostDomOnlyViewerPass(Registry);
+   initializePostDomOnlyPrinterPass(Registry);
+Index: CMakeLists.txt
+--- CMakeLists.txt
++++ CMakeLists.txt
+@@ -40,7 +40,6 @@
+   Lint.cpp
+   Loads.cpp
+   LoopAccessAnalysis.cpp
+-  LoopCostAnalysis.cpp
+   LoopUnrollAnalyzer.cpp
+   LoopInfo.cpp
+   LoopPass.cpp
