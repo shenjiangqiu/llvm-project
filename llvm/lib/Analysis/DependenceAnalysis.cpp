@@ -113,7 +113,8 @@ static cl::opt<bool>
 
 //===----------------------------------------------------------------------===//
 // basics
-
+static
+const SCEVConstant *getConstantPart(const SCEV *Expr);
 static AliasResult underlyingObjectsAlias(AliasAnalysis *AA,
                                           const DataLayout &DL,
                                           const MemoryLocation &LocA,
@@ -329,56 +330,71 @@ void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& A
       errs()<<blocks->getParent()->getName()<<"\n";
       auto groups=build_Groups(blocks,AA);
       int i=1;
-      for(auto&& sub1:groups){
-        errs()<<"loop level :"<<i++<<"\n";
+      for(auto&& sub1:groups){//process all loop levels
+        errs()<<"loop level :"<<i<<"\n";
         int j=1;
         for(auto&& sub2:sub1){
-          errs()<<"refGroup: "<<j++<<"\n";
+          errs()<<"refGroup: "<<j<<",{\n";
           auto &&insts=sub2.GetInstructions();
           for(auto &&inst:insts){
             errs()<<*inst<<"\n";
           }  
-          errs()<<"\n";
-          auto Leader=dyn_cast<SCEVAddRecExpr>( SE.getSCEV(getLoadStorePointerOperand(sub2.GetLeader())));
-          Leader->dump();
+          errs()<<"}\n";
+          //const auto Leader=dyn_cast<SCEVAddRecExpr>( SE.getSCEV(getLoadStorePointerOperand(sub2.GetLeader())));
 
+          unsigned stride=999;
+          auto Leader_GEP=dyn_cast<GEPOperator>(getLoadStorePointerOperand(sub2.GetLeader()));
+          auto start=Leader_GEP->idx_begin();//the last oprand;
+          auto end=Leader_GEP->idx_end();
+          Use* least_significant;
+          
+          for(;start!=end;++start){
+            //collectUpperBound(curLoop, opRaw->getStepRecurrence(*SE)->getType());
+            least_significant=start;
+          }
+          const SCEVAddRecExpr* least_SCEV=dyn_cast<SCEVAddRecExpr> (SE.getSCEV(*least_significant));
+          const SCEVAddRecExpr* least_SCEV_origin=least_SCEV;
+          errs()<<least_SCEV->getLoop()->getLoopDepth()<<"\n";
+          while (least_SCEV &&(least_SCEV->getLoop()->getLoopDepth()!=i))
+          {
+            least_SCEV=dyn_cast<SCEVAddRecExpr>(least_SCEV->getStart());
+            /* code */
+          }
+          if(!least_SCEV){
+            //errs()<<"no scev find\n";
+            stride=-1;
+          }else{
+            //errs()<<"find stride!\nstride= "<<(stride=*(getConstantPart(least_SCEV->getStepRecurrence(SE))->getAPInt().getRawData()))<<"\n";
+            stride=*(getConstantPart(least_SCEV->getStepRecurrence(SE))->getAPInt().getRawData());
+            errs()<<"\n";
+          }
+          unsigned cost=1;
+          unsigned all_other_loop=1;
+          while(least_SCEV_origin && (least_SCEV_origin->getLoop()->getLoopDepth()!=1)){
+            errs()<<"loop boundL "<<*collectUpperBound(least_SCEV_origin->getLoop(),getLoadStorePointerOperand(sub2.GetLeader())->getType())<<"\n";
+            least_SCEV_origin=dyn_cast<SCEVAddRecExpr>(least_SCEV_origin->getStart());
+
+          }
+          if(least_SCEV_origin)
+            errs()<<"loop boundL "<<*collectUpperBound(least_SCEV_origin->getLoop(),getLoadStorePointerOperand(sub2.GetLeader())->getType())<<"\n";
+
+
+          //
+
+
+          errs()<<"\n";
+          j++;
         }
-        
-        errs()<<"Loop cost: ";
-        
-        errs()<<"----------\n";
-      }
+        errs()<<"\n";
+        i++;
+      }//end process all level
+      errs()<<"\n";
+
+
     }
-    // inner most loop
-    /*
-    bool printed_loop_nested = false;
-    for (auto &block : loop->getBlocks()) {
-      for (auto &inst : *block) {
-        if (isLoadOrStore(&inst)) {
-          auto loadPointer = getLoadStorePointerOperand(&inst);
-          auto ldstPointerSCEV = SE.getSCEV(loadPointer);
-          if (ldstPointerSCEV->getSCEVType() == scAddRecExpr) {
-            auto stride = dyn_cast<SCEVAddRecExpr>(ldstPointerSCEV)
-                              ->getStepRecurrence(SE);
-            auto loop_depth = loop->getLoopDepth();
-            
-            
-            unsigned long long stride_value=*dyn_cast<SCEVConstant>(stride)->getValue()->getValue().getRawData();
-            stride_value=stride_value/4;
-            if (stride_value < 16) {//only inside a cacheline can reuse
-              if (!printed_loop_nested) {
-                printed_loop_nested = true;
-                errs() << "Loop Nest " << loop_number++ << "\n";
-              }
-              errs() << inst << "\n";
-              errs() << "level: " << loop_depth << "\n";
-              errs() << "stride: " << stride_value << "\n\n";
-            }//only have cache locality
-          }//only addrect
-        }//if is ldst
-      }//for every instruction in block
-    }//for every blocks
-    */
+
+          
+
   } else {
     for (const auto subloop : *loop) {
       processAllLoops(subloop, SE,AA);
