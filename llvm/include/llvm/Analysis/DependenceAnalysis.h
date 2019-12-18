@@ -287,7 +287,7 @@ template <typename T> class ArrayRef;
   class DependenceInfo {
   public:
     void processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& AA);
-    bool IsInSameGroup(Instruction *inst,RefGroup *group,AAResults& AA,int level);
+    bool IsInSameGroup(Instruction *inst,RefGroup *group,AAResults& AA,int level,bool&);
     bool isSpatialReuse(Instruction* Src,Instruction* Dst);
     std::vector<std::vector<RefGroup>> build_Groups(BasicBlock* block,AAResults& AA);
     DependenceInfo(Function *F, AliasAnalysis *AA, ScalarEvolution *SE,

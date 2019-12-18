@@ -246,15 +246,10 @@ bool DependenceInfo::isSpatialReuse(Instruction* Src,Instruction* Dst){
 }
 
 bool DependenceInfo::IsInSameGroup(Instruction *inst, RefGroup *group,
-                                   AAResults &AA, int level) {
+                                   AAResults &AA, int level,bool &isNewLeader) {
 
   // errs()<<*inst<<"\n"<<*(group->GetLeader())<<"\n"<<inst->getFunction()->getName()<<"\n";
   for (auto group_inst : group->GetInstructions()) {
-
-    if (isSpatialReuse(inst, group_inst)) {
-      return true;
-    }
-
     auto d = depends(inst, group_inst, true);
 
     if (d) { // temporal reuse
@@ -275,12 +270,26 @@ bool DependenceInfo::IsInSameGroup(Instruction *inst, RefGroup *group,
           }
         }
       }
+      int dis =
+          *(getConstantPart(d->getDistance(level))->getAPInt().getRawData());
+      if (dis > 0) {
+        isNewLeader = true;
+      } else {
+        isNewLeader = false;
+      }
       if (temporalReuse) {
         return true;
-      } 
-      //not find temporal in this loop, find other instructions in this group for temporal reuse;
+      }
+      // not find temporal in this loop, find other instructions in this group
+      // for temporal reuse;
       // errs()<<"\n";
-    } 
+    }
+  }
+  for (auto group_inst : group->GetInstructions()) {
+    if (isSpatialReuse(inst, group_inst)) {
+      isNewLeader = false;
+      return true;
+    }
   }
   return false;
 }
@@ -301,9 +310,10 @@ std::vector<std::vector<RefGroup>> DependenceInfo::build_Groups(BasicBlock* bloc
       } else {
         bool added = false;
         for (auto &&group : level_groups) {
-          if (IsInSameGroup(&inst, &group, AA,i)) {
+          bool is_new_leader;
+          if (IsInSameGroup(&inst, &group, AA,i,is_new_leader)) {
             added = true;
-            group.AddToGroup(&inst, false); // TODO, need to find is leader
+            group.AddToGroup(&inst, is_new_leader); // TODO, need to find is leader
             //assert(0);                      // TODO can't reach here now
             break;
           }
@@ -331,8 +341,9 @@ void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& A
       auto groups=build_Groups(blocks,AA);
       int i=1;
       for(auto&& sub1:groups){//process all loop levels
-        errs()<<"loop level :"<<i<<"\n";
+        errs()<<"loop control variable level :"<<i<<"\n";
         int j=1;
+        auto total_cost=0;
         for(auto&& sub2:sub1){
           errs()<<"refGroup: "<<j<<",{\n";
           auto &&insts=sub2.GetInstructions();
@@ -340,6 +351,7 @@ void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& A
             errs()<<*inst<<"\n";
           }  
           errs()<<"}\n";
+          errs()<<"leader: "<<*(sub2.GetLeader())<<"\n\n";
           //const auto Leader=dyn_cast<SCEVAddRecExpr>( SE.getSCEV(getLoadStorePointerOperand(sub2.GetLeader())));
 
           unsigned stride=999;
@@ -354,7 +366,7 @@ void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& A
           }
           const SCEVAddRecExpr* least_SCEV=dyn_cast<SCEVAddRecExpr> (SE.getSCEV(*least_significant));
           const SCEVAddRecExpr* least_SCEV_origin=least_SCEV;
-          errs()<<least_SCEV->getLoop()->getLoopDepth()<<"\n";
+          //errs()<<least_SCEV->getLoop()->getLoopDepth()<<"\n";
           while (least_SCEV &&(least_SCEV->getLoop()->getLoopDepth()!=i))
           {
             least_SCEV=dyn_cast<SCEVAddRecExpr>(least_SCEV->getStart());
@@ -370,13 +382,31 @@ void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& A
           }
           unsigned cost=1;
           unsigned all_other_loop=1;
-          while(least_SCEV_origin && (least_SCEV_origin->getLoop()->getLoopDepth()!=1)){
-            errs()<<"loop boundL "<<*collectUpperBound(least_SCEV_origin->getLoop(),getLoadStorePointerOperand(sub2.GetLeader())->getType())<<"\n";
-            least_SCEV_origin=dyn_cast<SCEVAddRecExpr>(least_SCEV_origin->getStart());
+          unsigned this_loop_round=1;
+          unsigned other_loop_round=1;
+          auto loop=LI->getLoopFor(blocks);
+          unsigned loop_temp_level=loop->getLoopDepth();
+          while(loop){
+            if(loop->getLoopDepth()==i){
+              this_loop_round=*(getConstantPart( SE.getBackedgeTakenCount(loop))->getAPInt().getRawData())+1;
 
+            }else{
+              other_loop_round*=*(getConstantPart( SE.getBackedgeTakenCount(loop))->getAPInt().getRawData())+1;
+            }
+            loop=loop->getParentLoop();
           }
-          if(least_SCEV_origin)
-            errs()<<"loop boundL "<<*collectUpperBound(least_SCEV_origin->getLoop(),getLoadStorePointerOperand(sub2.GetLeader())->getType())<<"\n";
+         // errs()<<"this loop count="<<this_loop_round<<"\n";
+          //errs()<<"other loop count="<<other_loop_round<<"\n";
+          if(stride==-1){
+            cost=this_loop_round*other_loop_round;
+          }else{
+            cost=this_loop_round*other_loop_round/(16/stride);
+          }
+          errs()<<"group "<<j<<" cost: "<<cost<<"\n";
+          total_cost+=cost;
+          //if(least_SCEV_origin)
+            //errs()<<"loop boundL "<<*collectUpperBound(least_SCEV_origin->getLoop(),getLoadStorePointerOperand(sub2.GetLeader())->getType())<<"\n";
+          
 
 
           //
@@ -385,9 +415,12 @@ void DependenceInfo::processAllLoops(Loop *loop,ScalarEvolution &SE,AAResults& A
           errs()<<"\n";
           j++;
         }
+        errs()<<"totoal cost: "<<total_cost<<"\n";
+        errs()<<"------end of loop "<<i<<" ------"<<"\n";
         errs()<<"\n";
         i++;
       }//end process all level
+      errs()<<"----------end of process function: "<<blocks->getParent()->getName()<<" ,--------------\n";
       errs()<<"\n";
 
 
